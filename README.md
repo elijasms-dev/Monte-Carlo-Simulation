@@ -51,4 +51,3 @@ Absolute error    : 0.0226
 - support quasi-random sampling or control variates
 - compare convergence speed across variance reduction techniques
 - add notebook-based visualizations of simulated paths
-
