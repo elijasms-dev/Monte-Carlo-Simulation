@@ -87,6 +87,57 @@ Two payoff families are included:
 
 That pairing is useful in interviews because it shows you understand both the modeling and the validation path.
 
+## Heston stochastic volatility
+
+The Heston workflow models variance as its own stochastic process:
+
+```text
+dS_t = r S_t dt + sqrt(v_t) S_t dW_t^S
+dv_t = kappa (theta - v_t) dt + xi sqrt(v_t) dW_t^v
+```
+
+with correlation `rho` between the spot and variance shocks.
+
+The implementation now supports two complementary valuation paths:
+
+- a full-truncation Euler Monte Carlo scheme for pathwise experimentation
+- a semi-closed-form characteristic-function pricer for fast deterministic calibration and smile generation
+
+The Monte Carlo side uses a full-truncation Euler scheme:
+
+- negative variance values are clipped before they enter the drift and diffusion terms
+- spot and variance shocks are correlated pathwise
+- the resulting prices are translated into Black-Scholes implied vols for easier interpretation
+
+The characteristic-function side matters because calibration is much easier to discuss when the valuation engine is deterministic, fast, and not blurred by Monte Carlo noise.
+
+This is a useful frontier because it lets the project discuss volatility smiles and skew rather than staying trapped in a constant-volatility world.
+
+## Market calibration
+
+The calibration workflow fits Heston parameters to a bundled historical SPY option snapshot.
+
+The current setup:
+
+- loads a cross-section of call quotes across multiple expiries and strikes
+- uses bid/ask mid prices as the calibration target
+- translates both market and model prices into implied vols for diagnostics
+- searches over `v0`, `theta`, `kappa`, `xi`, and `rho`
+- scores candidates with a normalized price RMSE plus an implied-volatility penalty
+
+The optimizer is intentionally lightweight and dependency-free:
+
+- an initial global random search explores broad parameter ranges
+- shrinking local perturbations refine the best candidate
+- a soft Feller-condition penalty discourages obviously poor variance dynamics
+
+This is not meant to replace production calibration infrastructure. It is meant to show the right instincts:
+
+- start from a deterministic pricing engine
+- fit against a transparent objective
+- report both parameter values and fit quality
+- keep the data provenance visible
+
 ## Convergence studies
 
 The study workflow compares:
@@ -111,10 +162,12 @@ This is useful for:
 
 ## Research reports
 
-The report workflow combines convergence, American-option, basket-option, and surface outputs into a single markdown artifact.
+The report workflow combines convergence, American-option, basket-option, stochastic-volatility, calibration, and surface outputs into a single markdown artifact.
 
 That artifact is intentionally portfolio-friendly:
 
 - it can be generated directly from the code
 - it keeps the project reproducible
 - it gives you something concrete to show beyond source files alone
+
+The report now also includes Heston smile and market-calibration sections so the generated artifact demonstrates both synthetic model behavior and real-snapshot fitting.

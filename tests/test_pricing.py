@@ -13,6 +13,20 @@ from monte_carlo_simulation.basket import (
     geometric_basket_price,
     price_basket_option_mc,
 )
+from monte_carlo_simulation.calibration import (
+    HestonParameters,
+    MarketOptionQuote,
+    bundled_market_data_path,
+    calibrate_heston_parameters,
+    load_market_quotes_csv,
+)
+from monte_carlo_simulation.heston import (
+    HestonSpec,
+    implied_volatility_from_price,
+    price_heston_option_cf,
+    price_heston_option_mc,
+    run_heston_smile_cf,
+)
 from monte_carlo_simulation.pricing import (
     ASIAN_ARITHMETIC,
     CALL,
@@ -236,6 +250,161 @@ class PricingTests(unittest.TestCase):
         self.assertGreaterEqual(result.price, result.european_reference_price)
         self.assertGreater(result.early_exercise_ratio, 0.0)
 
+    def test_heston_with_constant_variance_matches_black_scholes(self) -> None:
+        spec = HestonSpec(
+            spot=100.0,
+            strike=100.0,
+            rate=0.03,
+            maturity=1.0,
+            initial_variance=0.04,
+            long_run_variance=0.04,
+            mean_reversion=1.5,
+            vol_of_vol=0.0,
+            correlation=-0.7,
+            option_type=CALL,
+        )
+        result = price_heston_option_mc(
+            spec=spec,
+            config=SimulationConfig(
+                num_paths=20_000,
+                time_steps=64,
+                seed=41,
+                antithetic=True,
+                control_variate=False,
+                sampling="pseudo",
+            ),
+        )
+
+        self.assertAlmostEqual(
+            result.price,
+            black_scholes_price(100.0, 100.0, 0.03, 0.2, 1.0, CALL),
+            delta=0.18,
+        )
+
+    def test_heston_characteristic_function_matches_black_scholes_when_vol_of_vol_is_zero(self) -> None:
+        spec = HestonSpec(
+            spot=100.0,
+            strike=105.0,
+            rate=0.03,
+            maturity=1.0,
+            initial_variance=0.04,
+            long_run_variance=0.04,
+            mean_reversion=2.0,
+            vol_of_vol=0.0,
+            correlation=-0.4,
+            option_type=CALL,
+            dividend_yield=0.0,
+        )
+
+        price = price_heston_option_cf(spec, integration_points=600)
+
+        self.assertAlmostEqual(
+            price,
+            black_scholes_price(100.0, 105.0, 0.03, 0.2, 1.0, CALL),
+            delta=0.18,
+        )
+
+    def test_heston_smile_exhibits_negative_skew(self) -> None:
+        spec = HestonSpec(
+            spot=100.0,
+            strike=100.0,
+            rate=0.03,
+            maturity=1.0,
+            initial_variance=0.04,
+            long_run_variance=0.04,
+            mean_reversion=2.0,
+            vol_of_vol=0.6,
+            correlation=-0.75,
+            option_type=CALL,
+            dividend_yield=0.01,
+        )
+        smile = run_heston_smile_cf(
+            spec=spec,
+            strikes=[80.0, 90.0, 100.0, 110.0, 120.0],
+        )
+
+        self.assertEqual(len(smile), 5)
+        self.assertIsNotNone(smile[0].implied_volatility)
+        self.assertIsNotNone(smile[-1].implied_volatility)
+        self.assertGreater(smile[0].implied_volatility, smile[-1].implied_volatility)
+
+    def test_bundled_market_quotes_dataset_loads(self) -> None:
+        quotes = load_market_quotes_csv(bundled_market_data_path())
+
+        self.assertEqual(len(quotes), 25)
+        self.assertEqual(quotes[0].expiration, "2026-03-16")
+        self.assertEqual(quotes[-1].expiration, "2026-05-15")
+        self.assertTrue(all(quote.market_implied_volatility is not None for quote in quotes))
+
+    def test_heston_calibration_fits_synthetic_quotes(self) -> None:
+        parameters = HestonParameters(
+            initial_variance=0.05,
+            long_run_variance=0.04,
+            mean_reversion=1.8,
+            vol_of_vol=0.55,
+            correlation=-0.65,
+        )
+        quotes: list[MarketOptionQuote] = []
+        for maturity, expiration in ((0.25, "2026-06-30"), (0.50, "2026-09-30"), (1.0, "2027-03-30")):
+            for strike in (90.0, 100.0, 110.0):
+                price = price_heston_option_cf(
+                    HestonSpec(
+                        spot=100.0,
+                        strike=strike,
+                        rate=0.03,
+                        maturity=maturity,
+                        initial_variance=parameters.initial_variance,
+                        long_run_variance=parameters.long_run_variance,
+                        mean_reversion=parameters.mean_reversion,
+                        vol_of_vol=parameters.vol_of_vol,
+                        correlation=parameters.correlation,
+                        option_type=CALL,
+                        dividend_yield=0.01,
+                    ),
+                    integration_points=220,
+                )
+                quotes.append(
+                    MarketOptionQuote(
+                        snapshot_date="2026-03-30",
+                        expiration=expiration,
+                        underlying="TEST",
+                        spot=100.0,
+                        strike=strike,
+                        maturity=maturity,
+                        rate=0.03,
+                        dividend_yield=0.01,
+                        option_type=CALL,
+                        bid=price,
+                        ask=price,
+                        market_price=price,
+                        market_implied_volatility=implied_volatility_from_price(
+                            price,
+                            spot=100.0,
+                            strike=strike,
+                            rate=0.03,
+                            maturity=maturity,
+                            option_type=CALL,
+                            dividend_yield=0.01,
+                        ),
+                    )
+                )
+
+        result = calibrate_heston_parameters(
+            quotes,
+            seed=5,
+            global_samples=18,
+            search_rounds=4,
+            local_samples=12,
+            integration_points=144,
+        )
+
+        self.assertLess(result.rmse_price, 0.35)
+        self.assertLess(result.max_abs_price_error, 0.65)
+        self.assertIsNotNone(result.rmse_implied_volatility)
+        self.assertLess(result.rmse_implied_volatility, 0.025)
+        self.assertLess(result.parameters.correlation, -0.15)
+        self.assertGreater(result.parameters.vol_of_vol, 0.15)
+
     def test_geometric_basket_mc_tracks_closed_form(self) -> None:
         spec = BasketOptionSpec(
             spots=(100.0, 95.0, 105.0),
@@ -332,6 +501,8 @@ class PricingTests(unittest.TestCase):
                 american_paths=2_000,
                 basket_paths=2_000,
                 surface_paths=1_000,
+                heston_paths=2_000,
+                calibration_data=str(bundled_market_data_path()),
             )
             contents = output_path.read_text(encoding="utf-8")
         finally:
@@ -341,6 +512,8 @@ class PricingTests(unittest.TestCase):
         self.assertIn("European Option Convergence Study", contents)
         self.assertIn("American Put via Longstaff-Schwartz", contents)
         self.assertIn("Correlated Basket Option", contents)
+        self.assertIn("Heston Volatility Smile", contents)
+        self.assertIn("Heston Calibration to a Market Snapshot", contents)
 
 
 if __name__ == "__main__":

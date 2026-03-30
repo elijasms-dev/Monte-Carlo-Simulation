@@ -12,6 +12,23 @@ from .basket import (
     geometric_basket_price,
     price_basket_option_mc,
 )
+from .calibration import (
+    bundled_market_data_path,
+    calibrate_heston_parameters,
+    format_calibration_summary,
+    format_calibration_table,
+    load_market_quotes_csv,
+    write_calibration_csv,
+)
+from .heston import (
+    HestonSpec,
+    format_heston_smile_table,
+    price_heston_option_cf,
+    price_heston_option_mc,
+    run_heston_smile,
+    run_heston_smile_cf,
+    write_heston_smile_csv,
+)
 from .pricing import (
     ASIAN_ARITHMETIC,
     EUROPEAN,
@@ -236,6 +253,156 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable the geometric-basket control variate for arithmetic baskets.",
     )
 
+    heston_parser = subparsers.add_parser(
+        "heston",
+        help="Price a European option under Heston stochastic volatility.",
+    )
+    _add_option_arguments(heston_parser)
+    _add_simulation_arguments(heston_parser)
+    heston_parser.add_argument(
+        "--v0",
+        type=float,
+        default=0.04,
+        help="Initial variance level.",
+    )
+    heston_parser.add_argument(
+        "--theta",
+        type=float,
+        default=0.04,
+        help="Long-run variance level.",
+    )
+    heston_parser.add_argument(
+        "--kappa",
+        type=float,
+        default=2.0,
+        help="Mean-reversion speed of the variance process.",
+    )
+    heston_parser.add_argument(
+        "--vol-of-vol",
+        type=float,
+        default=0.5,
+        help="Volatility of variance.",
+    )
+    heston_parser.add_argument(
+        "--rho",
+        type=float,
+        default=-0.7,
+        help="Correlation between asset and variance shocks.",
+    )
+    heston_parser.add_argument(
+        "--dividend-yield",
+        type=float,
+        default=0.0,
+        help="Continuous dividend yield used in the Heston drift.",
+    )
+    heston_parser.add_argument(
+        "--cf",
+        action="store_true",
+        help="Use the semi-closed-form Heston characteristic-function pricer.",
+    )
+
+    smile_parser = subparsers.add_parser(
+        "smile",
+        help="Generate a Heston implied-volatility smile across strikes.",
+    )
+    _add_option_arguments(smile_parser)
+    _add_simulation_arguments(smile_parser)
+    smile_parser.add_argument(
+        "--v0",
+        type=float,
+        default=0.04,
+        help="Initial variance level.",
+    )
+    smile_parser.add_argument(
+        "--theta",
+        type=float,
+        default=0.04,
+        help="Long-run variance level.",
+    )
+    smile_parser.add_argument(
+        "--kappa",
+        type=float,
+        default=2.0,
+        help="Mean-reversion speed of the variance process.",
+    )
+    smile_parser.add_argument(
+        "--vol-of-vol",
+        type=float,
+        default=0.5,
+        help="Volatility of variance.",
+    )
+    smile_parser.add_argument(
+        "--rho",
+        type=float,
+        default=-0.7,
+        help="Correlation between asset and variance shocks.",
+    )
+    smile_parser.add_argument(
+        "--dividend-yield",
+        type=float,
+        default=0.0,
+        help="Continuous dividend yield used in the Heston drift.",
+    )
+    smile_parser.add_argument(
+        "--strikes",
+        type=float,
+        nargs="+",
+        default=[80.0, 90.0, 100.0, 110.0, 120.0],
+        help="Strike grid used for the smile study.",
+    )
+    smile_parser.add_argument(
+        "--cf",
+        action="store_true",
+        help="Use the semi-closed-form Heston characteristic-function pricer.",
+    )
+    smile_parser.add_argument(
+        "--csv",
+        type=str,
+        default=None,
+        help="Optional CSV output path.",
+    )
+
+    calibrate_parser = subparsers.add_parser(
+        "calibrate",
+        help="Calibrate Heston parameters to a market option snapshot.",
+    )
+    calibrate_parser.add_argument(
+        "--market-data",
+        type=str,
+        default=str(bundled_market_data_path()),
+        help="CSV file containing market option quotes.",
+    )
+    calibrate_parser.add_argument(
+        "--global-samples",
+        type=int,
+        default=48,
+        help="Number of broad random candidates evaluated before local refinement.",
+    )
+    calibrate_parser.add_argument(
+        "--rounds",
+        type=int,
+        default=6,
+        help="Number of local-search refinement rounds.",
+    )
+    calibrate_parser.add_argument(
+        "--local-samples",
+        type=int,
+        default=24,
+        help="Number of local candidates evaluated per refinement round.",
+    )
+    calibrate_parser.add_argument(
+        "--integration-points",
+        type=int,
+        default=256,
+        help="Quadrature points used in the Heston characteristic-function pricer.",
+    )
+    calibrate_parser.add_argument(
+        "--csv",
+        type=str,
+        default=None,
+        help="Optional CSV output path for fitted-vs-market rows.",
+    )
+
     report_parser = subparsers.add_parser(
         "report",
         help="Generate a markdown research report from the current toolkit.",
@@ -246,6 +413,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="outputs/research_report.md",
         help="Markdown output path for the generated report.",
     )
+    report_parser.add_argument(
+        "--calibration-data",
+        type=str,
+        default=str(bundled_market_data_path()),
+        help="Market snapshot used for the calibration section of the report.",
+    )
     report_parser.add_argument("--seed", type=int, default=7, help="Seed used for reproducible draws.")
     return parser
 
@@ -253,7 +426,7 @@ def build_parser() -> argparse.ArgumentParser:
 def _normalize_argv(argv: list[str]) -> list[str]:
     if not argv:
         return ["price"]
-    if argv[0] in {"price", "study", "surface", "american", "basket", "report", "-h", "--help"}:
+    if argv[0] in {"price", "study", "surface", "american", "basket", "heston", "smile", "calibrate", "report", "-h", "--help"}:
         return argv
     return ["price", *argv]
 
@@ -335,6 +508,22 @@ def _build_correlation(args: argparse.Namespace, dimension: int) -> tuple[tuple[
         start = row * dimension
         rows.append(tuple(args.corr[start : start + dimension]))
     return tuple(rows)
+
+
+def _build_heston_spec(args: argparse.Namespace) -> HestonSpec:
+    return HestonSpec(
+        spot=args.spot,
+        strike=args.strike,
+        rate=args.rate,
+        maturity=args.maturity,
+        initial_variance=args.v0,
+        long_run_variance=args.theta,
+        mean_reversion=args.kappa,
+        vol_of_vol=args.vol_of_vol,
+        correlation=args.rho,
+        option_type=args.option_type,
+        dividend_yield=args.dividend_yield,
+    )
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -467,8 +656,74 @@ def main(argv: list[str] | None = None) -> None:
             print("\n".join(lines))
             return
 
+        if args.command == "heston":
+            spec = _build_heston_spec(args)
+            if args.cf:
+                price = price_heston_option_cf(spec)
+                lines = [
+                    f"Model             : Heston stochastic volatility",
+                    f"Method            : Heston characteristic function",
+                    f"Closed-form price : {price:.5f}",
+                    f"Dividend yield    : {args.dividend_yield:.5f}",
+                ]
+            else:
+                config = _build_config(args)
+                result = price_heston_option_mc(spec=spec, config=config)
+                implied_vol = "-" if result.implied_volatility is None else f"{result.implied_volatility:.5f}"
+                lines = [
+                    f"Model             : Heston stochastic volatility",
+                    f"Method            : {result.method}",
+                    f"Paths x steps     : {result.num_paths} x {result.time_steps}",
+                    f"Monte Carlo price : {result.price:.5f}",
+                    f"Std. error        : {result.standard_error:.5f}",
+                    f"95% CI            : [{result.confidence_interval[0]:.5f}, {result.confidence_interval[1]:.5f}]",
+                    f"Implied vol       : {implied_vol}",
+                    f"Mean path var     : {result.mean_path_variance:.5f}",
+                    f"Mean terminal var : {result.mean_terminal_variance:.5f}",
+                    f"Dividend yield    : {args.dividend_yield:.5f}",
+                    f"Runtime           : {result.runtime_seconds * 1000:.2f} ms",
+                ]
+            print("\n".join(lines))
+            return
+
+        if args.command == "smile":
+            spec = _build_heston_spec(args)
+            if args.cf:
+                points = run_heston_smile_cf(spec=spec, strikes=list(args.strikes))
+            else:
+                config = _build_config(args)
+                points = run_heston_smile(spec=spec, strikes=list(args.strikes), config=config)
+            print(format_heston_smile_table(points))
+            if args.csv:
+                output_path = write_heston_smile_csv(points, args.csv)
+                print(f"\nCSV written to    : {output_path}")
+            return
+
+        if args.command == "calibrate":
+            quotes = load_market_quotes_csv(args.market_data)
+            result = calibrate_heston_parameters(
+                quotes,
+                seed=7,
+                global_samples=args.global_samples,
+                search_rounds=args.rounds,
+                local_samples=args.local_samples,
+                integration_points=args.integration_points,
+            )
+            print(f"Dataset            : {args.market_data}")
+            print(format_calibration_summary(result))
+            print()
+            print(format_calibration_table(result.fitted_points))
+            if args.csv:
+                output_path = write_calibration_csv(result, args.csv)
+                print(f"\nCSV written to    : {output_path}")
+            return
+
         if args.command == "report":
-            output_path = build_research_report(args.output, seed=args.seed)
+            output_path = build_research_report(
+                args.output,
+                seed=args.seed,
+                calibration_data=args.calibration_data,
+            )
             print(f"Research report   : {output_path}")
             return
     except ValueError as exc:

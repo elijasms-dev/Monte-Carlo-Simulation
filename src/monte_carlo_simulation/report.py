@@ -4,6 +4,13 @@ from pathlib import Path
 
 from .american import price_american_option_lsm
 from .basket import BASKET_ARITHMETIC, BasketOptionSpec, build_equicorrelation_matrix, price_basket_option_mc
+from .calibration import (
+    bundled_market_data_path,
+    calibrate_heston_parameters,
+    format_calibration_table,
+    load_market_quotes_csv,
+)
+from .heston import HestonSpec, format_heston_smile_table, run_heston_smile_cf
 from .pricing import CALL, EUROPEAN, PUT, OptionSpec, SimulationConfig
 from .study import format_study_table, run_convergence_study
 from .surface import format_surface_table, run_sensitivity_surface
@@ -19,6 +26,8 @@ def build_research_report(
     american_paths: int = 30_000,
     basket_paths: int = 40_000,
     surface_paths: int = 8_000,
+    heston_paths: int = 20_000,
+    calibration_data: str | None = None,
 ) -> Path:
     study_paths = [5_000, 20_000, 50_000, 100_000] if study_paths is None else study_paths
     surface_spots = [80.0, 90.0, 100.0, 110.0, 120.0] if surface_spots is None else surface_spots
@@ -98,6 +107,34 @@ def build_research_report(
         include_greeks=True,
     )
 
+    heston_smile = run_heston_smile_cf(
+        spec=HestonSpec(
+            spot=100.0,
+            strike=100.0,
+            rate=0.03,
+            maturity=1.0,
+            initial_variance=0.04,
+            long_run_variance=0.04,
+            mean_reversion=2.0,
+            vol_of_vol=0.55,
+            correlation=-0.7,
+            option_type=CALL,
+        ),
+        strikes=[80.0, 90.0, 100.0, 110.0, 120.0],
+    )
+
+    calibration_quotes = load_market_quotes_csv(
+        calibration_data or bundled_market_data_path()
+    )
+    calibration_result = calibrate_heston_parameters(
+        calibration_quotes,
+        seed=seed,
+        global_samples=36,
+        search_rounds=5,
+        local_samples=20,
+        integration_points=224,
+    )
+
     report = f"""# Quant Monte Carlo Research Report
 
 This report was generated directly from the repository code. It summarizes the current research workflows and gives a compact artifact you can point to in applications or interviews.
@@ -132,11 +169,31 @@ The table below compares pseudo-random Monte Carlo, variance-reduced estimators,
 {format_surface_table(surface_points)}
 ```
 
-## 5. Takeaways
+## 5. Heston Volatility Smile
+
+```text
+{format_heston_smile_table(heston_smile)}
+```
+
+## 6. Heston Calibration to a Market Snapshot
+
+- Dataset: bundled SPY call snapshot from 2026-03-11 across five maturities and five strikes
+- Quotes fitted: `{calibration_result.num_quotes}`
+- RMSE price: `{calibration_result.rmse_price:.5f}`
+- RMSE implied vol: `{"-" if calibration_result.rmse_implied_volatility is None else f"{calibration_result.rmse_implied_volatility:.5f}"}`
+- Fitted parameters: `v0={calibration_result.parameters.initial_variance:.4f}`, `theta={calibration_result.parameters.long_run_variance:.4f}`, `kappa={calibration_result.parameters.mean_reversion:.4f}`, `xi={calibration_result.parameters.vol_of_vol:.4f}`, `rho={calibration_result.parameters.correlation:.4f}`
+
+```text
+{format_calibration_table(calibration_result.fitted_points, max_rows=10)}
+```
+
+## 7. Takeaways
 
 - variance reduction improves error per unit of compute, especially when paired with strong analytical anchors
 - early exercise matters for puts and can be studied directly through regression-based continuation estimates
 - correlated multi-asset structures create natural use cases for basket benchmarks and control variates
+- stochastic volatility generates strike-dependent implied vols, which makes the toolkit meaningfully closer to market reality than flat-vol GBM
+- calibrating Heston to a market snapshot is a stronger research signal than generating a synthetic smile in isolation
 - scenario surfaces provide a clean way to discuss non-linearity, sensitivities, and stress behavior
 """
 

@@ -11,6 +11,7 @@ This project is a small derivatives research sandbox built around Monte Carlo me
 - You separated products, engines, and experiment workflows so the repo looks like research infrastructure rather than a coding exercise.
 - You included both analytical checks and Monte Carlo-only products, which shows model selection judgment.
 - You compared pseudo-random sampling with quasi-Monte Carlo instead of assuming "Monte Carlo" is one fixed technique.
+- You went past flat volatility and added a stochastic-volatility workflow that can both generate a smile and calibrate to a market snapshot.
 
 ## Strong discussion angles
 
@@ -40,14 +41,27 @@ Also mention that under the no-dividend GBM assumption, American calls should ma
 
 Explain why arithmetic baskets generally need Monte Carlo, but geometric baskets give you a closed-form proxy that can double as a control variate.
 
+### Heston stochastic volatility
+
+Explain that constant-volatility Black-Scholes is often too rigid for market smiles and skew, so the Heston workflow introduces a stochastic variance process with correlated spot/variance shocks. Mention that negative correlation is what produces the familiar downward equity skew in the implied-vol surface.
+
+### Market calibration
+
+Explain that building a stochastic-volatility model is only half the story. The more relevant question is whether the model can fit a market surface. Talk through:
+
+- why calibration is easier with a deterministic characteristic-function pricer than with noisy Monte Carlo estimates
+- why you report both price-space and implied-volatility errors
+- why parameter stability and data quality matter just as much as the optimizer
+- what simplifying assumptions the bundled snapshot makes, such as a flat short rate and approximate dividend yield
+
 ### Experiment workflows
 
-Point out that the convergence, surface, and report commands are there to study model behavior systematically, not just print a single price.
+Point out that the convergence, smile, calibration, surface, and report commands are there to study model behavior systematically, not just print a single price.
 
 ## Good follow-up lines if they ask "what next?"
 
 - Sobol sequences or Brownian-bridge constructions on top of the current Halton workflow
-- stochastic-volatility models such as Heston
+- local-volatility calibration on top of the current Heston workflow
 - American option basis selection and regularization
 - basket options with time-varying covariance inputs
 - performance comparisons between Python, `numba`, and C++

@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "monte-carlo-simulation"
 version = "0.1.0"
-description = "Quant-focused Monte Carlo research toolkit with variance reduction, basket options, American exercise, and scenario studies."
+description = "Quant-focused Monte Carlo research toolkit with variance reduction, basket options, American exercise, Heston stochastic volatility, and scenario studies."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
   { name = "Elija" }
 ]
-keywords = ["quant-finance", "monte-carlo", "options-pricing", "derivatives", "risk"]
+keywords = ["quant-finance", "monte-carlo", "options-pricing", "derivatives", "risk", "stochastic-volatility", "heston", "calibration"]
 dependencies = [
   "numpy>=2.0"
 ]
@@ -27,3 +27,6 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+monte_carlo_simulation = ["data/market/*.csv"]
